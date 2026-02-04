@@ -1,5 +1,6 @@
 //! Tests for fragmented MP4 muxing
 
+use muxide::api::AudioCodec;
 use muxide::codec::vp9::Vp9Config;
 use muxide::fragmented::{FragmentConfig, FragmentedError, FragmentedMuxer};
 
@@ -235,3 +236,64 @@ fn test_fragmented_vp9_basic() {
     assert!(segment.windows(4).any(|w| w == b"moof"));
     assert!(segment.windows(4).any(|w| w == b"mdat"));
 }
+
+#[test]
+fn test_fragmented_multitrack_independent_dts() {
+    let config = FragmentConfig {
+        width: Some(1920),
+        height: Some(1080),
+        timescale: 90000,  // Video timescale
+        fragment_duration_ms: 2000,
+        sps: vec![0x00, 0x00, 0x00, 0x01, 0x67],
+        pps: vec![0x00, 0x00, 0x00, 0x01, 0x68],
+        vps: None,
+        av1_sequence_header: None,
+        vp9_config: None,
+        audio_codec: Some(AudioCodec::AAC),
+        audio_sample_rate: Some(48000),  // Audio timescale
+        audio_channels: Some(2),
+    };
+
+    let mut muxer = FragmentedMuxer::new(config);
+    let video_data = vec![0x00, 0x00, 0x00, 0x04, 0x65, 0x01, 0x02, 0x03];
+    let audio_data = vec![0xff, 0xf1, 0x4c, 0x80, 0x01, 0x3f, 0xfc];
+
+    // Video at DTS 0 (90kHz timescale)
+    assert!(muxer.write_video(0, 0, &video_data, true).is_ok());
+    
+    // Audio at DTS 0 (48kHz timescale) - OK even though same value
+    assert!(muxer.write_audio(0, &audio_data).is_ok());
+    
+    // Video at DTS 3000 (90kHz) 
+    assert!(muxer.write_video(3000, 3000, &video_data, false).is_ok());
+    
+    // Audio at DTS 1920 (48kHz) - Lower than video 3000, but OK because different track
+    assert!(muxer.write_audio(1920, &audio_data).is_ok());
+    
+    // Video at DTS 6000 (90kHz)
+    assert!(muxer.write_video(6000, 6000, &video_data, false).is_ok());
+    
+    // Audio at DTS 3840 (48kHz)
+    assert!(muxer.write_audio(3840, &audio_data).is_ok());
+    
+    // Audio backward in time within audio track should still fail
+    let result = muxer.write_audio(1000, &audio_data);
+    assert!(matches!(
+        result,
+        Err(FragmentedError::NonMonotonicDts {
+            prev_dts: 3840,
+            curr_dts: 1000
+        })
+    ));
+    
+    // Video backward in time within video track should still fail
+    let result = muxer.write_video(9000, 2000, &video_data, false);
+    assert!(matches!(
+        result,
+        Err(FragmentedError::NonMonotonicDts {
+            prev_dts: 6000,
+            curr_dts: 2000
+        })
+    ));
+}
+

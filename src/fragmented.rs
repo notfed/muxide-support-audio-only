@@ -129,7 +129,8 @@ pub struct FragmentedMuxer {
     sequence_number: u32,
     base_media_decode_time: u64,
     init_segment: Option<Vec<u8>>,
-    last_dts: Option<u64>,
+    last_dts_video: Option<u64>,
+    last_dts_audio: Option<u64>,
 }
 
 impl FragmentedMuxer {
@@ -141,7 +142,8 @@ impl FragmentedMuxer {
             sequence_number: 1,
             base_media_decode_time: 0,
             init_segment: None,
-            last_dts: None,
+            last_dts_video: None,
+            last_dts_audio: None,
         }
     }
 
@@ -179,8 +181,8 @@ impl FragmentedMuxer {
         data: &[u8],
         is_sync: bool,
     ) -> Result<(), FragmentedError> {
-        // Enforce monotonic DTS
-        if let Some(last) = self.last_dts {
+        // Enforce monotonic DTS within video track only
+        if let Some(last) = self.last_dts_video {
             if dts < last {
                 return Err(FragmentedError::NonMonotonicDts {
                     prev_dts: last,
@@ -188,7 +190,7 @@ impl FragmentedMuxer {
                 });
             }
         }
-        self.last_dts = Some(dts);
+        self.last_dts_video = Some(dts);
 
         self.samples.push(FragmentSample {
             pts,
@@ -211,8 +213,8 @@ impl FragmentedMuxer {
         // For audio, PTS == DTS
         let dts = pts;
         
-        // Enforce monotonic DTS
-        if let Some(last) = self.last_dts {
+        // Enforce monotonic DTS within audio track only
+        if let Some(last) = self.last_dts_audio {
             if dts < last {
                 return Err(FragmentedError::NonMonotonicDts {
                     prev_dts: last,
@@ -220,7 +222,7 @@ impl FragmentedMuxer {
                 });
             }
         }
-        self.last_dts = Some(dts);
+        self.last_dts_audio = Some(dts);
 
         self.samples.push(FragmentSample {
             pts,
