@@ -61,10 +61,10 @@ impl std::fmt::Display for FragmentedError {
 /// Configuration for fragmented MP4 output.
 #[derive(Debug, Clone)]
 pub struct FragmentConfig {
-    /// Video width in pixels.
-    pub width: u32,
-    /// Video height in pixels.
-    pub height: u32,
+    /// Video width in pixels (None for audio-only).
+    pub width: Option<u32>,
+    /// Video height in pixels (None for audio-only).
+    pub height: Option<u32>,
     /// Media timescale (typically 90000 for video).
     pub timescale: u32,
     /// Target fragment duration in milliseconds.
@@ -79,6 +79,12 @@ pub struct FragmentConfig {
     pub av1_sequence_header: Option<Vec<u8>>,
     /// VP9 configuration (extracted from first keyframe).
     pub vp9_config: Option<crate::codec::vp9::Vp9Config>,
+    /// Audio codec (None for video-only).
+    pub audio_codec: Option<crate::api::AudioCodec>,
+    /// Audio sample rate in Hz (None for video-only).
+    pub audio_sample_rate: Option<u32>,
+    /// Number of audio channels (None for video-only).
+    pub audio_channels: Option<u16>,
 }
 
 impl Default for FragmentConfig {
@@ -86,8 +92,8 @@ impl Default for FragmentConfig {
         // Note: This default provides example SPS/PPS for testing.
         // In production, you must provide actual SPS/PPS from your encoder.
         Self {
-            width: 1920,
-            height: 1080,
+            width: Some(1920),
+            height: Some(1080),
             timescale: 90000,
             fragment_duration_ms: 2000,
             sps: vec![0x67, 0x42, 0x00, 0x1e, 0xda, 0x02, 0x80, 0x2d, 0x8b, 0x11],
@@ -95,6 +101,9 @@ impl Default for FragmentConfig {
             vps: None,
             av1_sequence_header: None,
             vp9_config: None,
+            audio_codec: None,
+            audio_sample_rate: None,
+            audio_channels: None,
         }
     }
 }
@@ -186,6 +195,38 @@ impl FragmentedMuxer {
             dts,
             data: data.to_vec(),
             is_sync,
+        });
+        Ok(())
+    }
+
+    /// Queue an audio sample for the current fragment.
+    ///
+    /// - `pts`: Presentation timestamp in timescale units
+    /// - `data`: Sample data (raw AAC or Opus audio frame)
+    pub fn write_audio(
+        &mut self,
+        pts: u64,
+        data: &[u8],
+    ) -> Result<(), FragmentedError> {
+        // For audio, PTS == DTS
+        let dts = pts;
+        
+        // Enforce monotonic DTS
+        if let Some(last) = self.last_dts {
+            if dts < last {
+                return Err(FragmentedError::NonMonotonicDts {
+                    prev_dts: last,
+                    curr_dts: dts,
+                });
+            }
+        }
+        self.last_dts = Some(dts);
+
+        self.samples.push(FragmentSample {
+            pts,
+            dts,
+            data: data.to_vec(),
+            is_sync: true, // All audio samples are sync samples
         });
         Ok(())
     }
@@ -352,7 +393,14 @@ fn build_tkhd_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&[0u8; 8]); // Reserved
     payload.extend_from_slice(&0u16.to_be_bytes()); // Layer
     payload.extend_from_slice(&0u16.to_be_bytes()); // Alternate group
-    payload.extend_from_slice(&0u16.to_be_bytes()); // Volume (0 for video)
+    
+    // Volume: 0x0100 for audio, 0 for video
+    let volume = if config.audio_codec.is_some() && config.width.is_none() {
+        0x0100_u16 // Audio track
+    } else {
+        0u16 // Video track
+    };
+    payload.extend_from_slice(&volume.to_be_bytes());
     payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
                                                     // Unity matrix (36 bytes)
     payload.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
@@ -360,9 +408,11 @@ fn build_tkhd_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&0x0001_0000_u32.to_be_bytes());
     payload.extend_from_slice(&[0u8; 12]);
     payload.extend_from_slice(&0x4000_0000_u32.to_be_bytes());
-    // Width and height in fixed-point 16.16
-    payload.extend_from_slice(&((config.width) << 16).to_be_bytes());
-    payload.extend_from_slice(&((config.height) << 16).to_be_bytes());
+    // Width and height in fixed-point 16.16 (0 for audio)
+    let width = config.width.unwrap_or(0);
+    let height = config.height.unwrap_or(0);
+    payload.extend_from_slice(&(width << 16).to_be_bytes());
+    payload.extend_from_slice(&(height << 16).to_be_bytes());
     build_box(b"tkhd", &payload)
 }
 
@@ -373,8 +423,12 @@ fn build_mdia_fmp4(config: &FragmentConfig) -> Vec<u8> {
     let mdhd = build_mdhd_fmp4(config.timescale, None);
     payload.extend_from_slice(&mdhd);
 
-    // hdlr (handler)
-    let hdlr = build_hdlr_video();
+    // hdlr (handler) - audio or video
+    let hdlr = if config.audio_codec.is_some() && config.width.is_none() {
+        build_hdlr_audio()
+    } else {
+        build_hdlr_video()
+    };
     payload.extend_from_slice(&hdlr);
 
     // minf (media info)
@@ -412,21 +466,33 @@ fn build_mdhd_fmp4(timescale: u32, language: Option<&str>) -> Vec<u8> {
 }
 
 fn build_hdlr_video() -> Vec<u8> {
+    build_hdlr(b"vide", b"VideoHandler\0")
+}
+
+fn build_hdlr_audio() -> Vec<u8> {
+    build_hdlr(b"soun", b"SoundHandler\0")
+}
+
+fn build_hdlr(handler_type: &[u8; 4], name: &[u8]) -> Vec<u8> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&0u32.to_be_bytes()); // Version + flags
     payload.extend_from_slice(&0u32.to_be_bytes()); // Pre-defined
-    payload.extend_from_slice(b"vide"); // Handler type
+    payload.extend_from_slice(handler_type); // Handler type
     payload.extend_from_slice(&[0u8; 12]); // Reserved
-    payload.extend_from_slice(b"VideoHandler\0"); // Name
+    payload.extend_from_slice(name); // Name
     build_box(b"hdlr", &payload)
 }
 
 fn build_minf_fmp4(config: &FragmentConfig) -> Vec<u8> {
     let mut payload = Vec::new();
 
-    // vmhd (video media header)
-    let vmhd = build_vmhd();
-    payload.extend_from_slice(&vmhd);
+    // vmhd (video) or smhd (audio) media header
+    let media_header = if config.audio_codec.is_some() && config.width.is_none() {
+        build_smhd()
+    } else {
+        build_vmhd()
+    };
+    payload.extend_from_slice(&media_header);
 
     // dinf (data information)
     let dinf = build_dinf();
@@ -444,6 +510,14 @@ fn build_vmhd() -> Vec<u8> {
     payload.extend_from_slice(&0x0000_0001_u32.to_be_bytes()); // Version 0, flags: 1
     payload.extend_from_slice(&[0u8; 8]); // Graphics mode + op color
     build_box(b"vmhd", &payload)
+}
+
+fn build_smhd() -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_be_bytes()); // Version + flags
+    payload.extend_from_slice(&0u16.to_be_bytes()); // Balance (center)
+    payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
+    build_box(b"smhd", &payload)
 }
 
 fn build_dinf() -> Vec<u8> {
@@ -487,7 +561,10 @@ fn build_stbl_fmp4(config: &FragmentConfig) -> Vec<u8> {
 }
 
 fn build_stsd_fmp4(config: &FragmentConfig) -> Vec<u8> {
-    let sample_entry = if config.av1_sequence_header.is_some() {
+    let sample_entry = if config.audio_codec.is_some() && config.width.is_none() {
+        // Audio-only: build mp4a
+        build_mp4a_fmp4(config)
+    } else if config.av1_sequence_header.is_some() {
         build_av01_fmp4(config)
     } else if config.vp9_config.is_some() {
         build_vp09_fmp4(config)
@@ -511,8 +588,8 @@ fn build_avc1_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&0u16.to_be_bytes()); // Pre-defined
     payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
     payload.extend_from_slice(&[0u8; 12]); // Pre-defined
-    payload.extend_from_slice(&(config.width as u16).to_be_bytes());
-    payload.extend_from_slice(&(config.height as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.width.unwrap_or(0) as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.height.unwrap_or(0) as u16).to_be_bytes());
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Horizontal resolution (72 dpi)
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Vertical resolution (72 dpi)
     payload.extend_from_slice(&0u32.to_be_bytes()); // Reserved
@@ -535,8 +612,8 @@ fn build_hvc1_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&0u16.to_be_bytes()); // Pre-defined
     payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
     payload.extend_from_slice(&[0u8; 12]); // Pre-defined
-    payload.extend_from_slice(&(config.width as u16).to_be_bytes());
-    payload.extend_from_slice(&(config.height as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.width.unwrap_or(0) as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.height.unwrap_or(0) as u16).to_be_bytes());
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Horizontal resolution (72 dpi)
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Vertical resolution (72 dpi)
     payload.extend_from_slice(&0u32.to_be_bytes()); // Reserved
@@ -647,8 +724,8 @@ fn build_av01_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&0u16.to_be_bytes()); // Pre-defined
     payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
     payload.extend_from_slice(&[0u8; 12]); // Pre-defined
-    payload.extend_from_slice(&(config.width as u16).to_be_bytes());
-    payload.extend_from_slice(&(config.height as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.width.unwrap_or(0) as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.height.unwrap_or(0) as u16).to_be_bytes());
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Horizontal resolution (72 dpi)
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Vertical resolution (72 dpi)
     payload.extend_from_slice(&0u32.to_be_bytes()); // Reserved
@@ -682,8 +759,8 @@ fn build_vp09_fmp4(config: &FragmentConfig) -> Vec<u8> {
     payload.extend_from_slice(&0u16.to_be_bytes()); // Pre-defined
     payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
     payload.extend_from_slice(&[0u8; 12]); // Pre-defined
-    payload.extend_from_slice(&(config.width as u16).to_be_bytes());
-    payload.extend_from_slice(&(config.height as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.width.unwrap_or(0) as u16).to_be_bytes());
+    payload.extend_from_slice(&(config.height.unwrap_or(0) as u16).to_be_bytes());
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Horizontal resolution (72 dpi)
     payload.extend_from_slice(&0x0048_0000_u32.to_be_bytes()); // Vertical resolution (72 dpi)
     payload.extend_from_slice(&0u32.to_be_bytes()); // Reserved
@@ -712,6 +789,86 @@ fn build_vpcc_fmp4(config: &FragmentConfig) -> Vec<u8> {
         payload.push(vp9_config.full_range_flag); // full_range_flag
     }
     build_box(b"vpcC", &payload)
+}
+
+fn build_mp4a_fmp4(config: &FragmentConfig) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&[0u8; 6]); // Reserved
+    payload.extend_from_slice(&1u16.to_be_bytes()); // Data reference index
+    payload.extend_from_slice(&0u32.to_be_bytes()); // Version + reserved
+    payload.extend_from_slice(&0u32.to_be_bytes()); // Reserved
+    
+    let channels = config.audio_channels.unwrap_or(2);
+    let sample_rate = config.audio_sample_rate.unwrap_or(48000);
+    
+    payload.extend_from_slice(&channels.to_be_bytes()); // Channel count
+    payload.extend_from_slice(&16u16.to_be_bytes()); // Sample size (16-bit)
+    payload.extend_from_slice(&0u16.to_be_bytes()); // Pre-defined
+    payload.extend_from_slice(&0u16.to_be_bytes()); // Reserved
+    payload.extend_from_slice(&((sample_rate as u32) << 16).to_be_bytes()); // Sample rate (16.16 fixed point)
+    
+    // esds (Elementary Stream Descriptor) - for AAC
+    if matches!(config.audio_codec, Some(crate::api::AudioCodec::Aac(_))) {
+        let esds = build_esds_fmp4(config);
+        payload.extend_from_slice(&esds);
+    }
+    
+    build_box(b"mp4a", &payload)
+}
+
+fn build_esds_fmp4(config: &FragmentConfig) -> Vec<u8> {
+    let sample_rate = config.audio_sample_rate.unwrap_or(48000);
+    let channels = config.audio_channels.unwrap_or(2);
+    
+    // AAC-LC profile
+    let audio_object_type = 2u8; // AAC-LC
+    let sample_rate_index = match sample_rate {
+        96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3,
+        44100 => 4, 32000 => 5, 24000 => 6, 22050 => 7,
+        16000 => 8, 12000 => 9, 11025 => 10, 8000 => 11,
+        _ => 3, // Default to 48kHz
+    };
+    
+    // AudioSpecificConfig (2 bytes for AAC-LC)
+    let asc_byte1 = (audio_object_type << 3) | (sample_rate_index >> 1);
+    let asc_byte2 = ((sample_rate_index & 1) << 7) | ((channels as u8) << 3);
+    let asc = vec![asc_byte1, asc_byte2];
+    
+    // Build ES_Descriptor
+    let mut es_desc = Vec::new();
+    es_desc.push(0x03); // ES_DescrTag
+    es_desc.push(0x80); es_desc.push(0x80); es_desc.push(0x80); // Length encoding (variable)
+    es_desc.push(23 + asc.len() as u8); // Length
+    es_desc.extend_from_slice(&1u16.to_be_bytes()); // ES_ID
+    es_desc.push(0); // Flags
+    
+    // DecoderConfigDescriptor
+    es_desc.push(0x04); // DecoderConfigDescrTag
+    es_desc.push(0x80); es_desc.push(0x80); es_desc.push(0x80);
+    es_desc.push(15 + asc.len() as u8); // Length
+    es_desc.push(0x40); // ObjectTypeIndication (MPEG-4 Audio)
+    es_desc.push(0x15); // StreamType (Audio) + upstream flag
+    es_desc.extend_from_slice(&[0, 0, 0]); // Buffer size DB
+    es_desc.extend_from_slice(&128000u32.to_be_bytes()); // Max bitrate
+    es_desc.extend_from_slice(&128000u32.to_be_bytes()); // Avg bitrate
+    
+    // DecoderSpecificInfo
+    es_desc.push(0x05); // DecSpecificInfoTag
+    es_desc.push(0x80); es_desc.push(0x80); es_desc.push(0x80);
+    es_desc.push(asc.len() as u8); // Length
+    es_desc.extend_from_slice(&asc);
+    
+    // SLConfigDescriptor
+    es_desc.push(0x06); // SLConfigDescrTag
+    es_desc.push(0x80); es_desc.push(0x80); es_desc.push(0x80);
+    es_desc.push(1); // Length
+    es_desc.push(2); // predefined = 2
+    
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_be_bytes()); // Version + flags
+    payload.extend_from_slice(&es_desc);
+    
+    build_box(b"esds", &payload)
 }
 
 // ============================================================================

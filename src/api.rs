@@ -430,19 +430,22 @@ impl<Writer> MuxerBuilder<Writer> {
     /// This creates a `FragmentedMuxer` with the configuration from this builder.
     /// Supports H.264, H.265, AV1, and VP9 video for fragmented MP4.
     /// Codec-specific parameters must be provided using the appropriate with_() methods.
-    /// Only video configuration is supported for fragmented MP4.
+    /// Supports video-only, audio-only, and video+audio configurations.
     ///
     /// # Errors
     ///
-    /// Returns an error if video configuration is missing, unsupported codec,
+    /// Returns an error if no tracks are configured, unsupported codec,
     /// or required codec parameters are not provided.
     pub fn new_with_fragment(self) -> Result<FragmentedMuxer, MuxerError> {
-        // Fragmented MP4 requires video configuration
-        let (codec, width, height, _framerate) =
-            self.video.ok_or(MuxerError::MissingVideoConfig)?;
+        // At least one track must be configured
+        if self.video.is_none() && self.audio.is_none() {
+            return Err(MuxerError::MissingTrackConfig);
+        }
 
-        // Extract codec-specific configuration
-        let (sps, pps, vps, av1_sequence_header, vp9_config) = match codec {
+        // Extract video configuration if present
+        let (width, height, sps, pps, vps, av1_sequence_header, vp9_config) = if let Some((codec, width, height, _framerate)) = self.video {
+            // Extract codec-specific configuration
+            let (sps, pps, vps, av1_sequence_header, vp9_config) = match codec {
             VideoCodec::H264 => {
                 let sps = self.sps.ok_or_else(|| {
                     MuxerError::Io(std::io::Error::new(
@@ -495,18 +498,33 @@ impl<Writer> MuxerBuilder<Writer> {
                 })?;
                 (vec![], vec![], None, None, Some(vp9_config))
             }
+            };
+            (Some(width), Some(height), sps, pps, vps, av1_sequence_header, vp9_config)
+        } else {
+            // Audio-only configuration
+            (None, None, vec![], vec![], None, None, None)
+        };
+
+        // Extract audio configuration if present
+        let (audio_codec, audio_sample_rate, audio_channels) = if let Some((codec, sample_rate, channels)) = self.audio {
+            (Some(codec), Some(sample_rate), Some(channels))
+        } else {
+            (None, None, None)
         };
 
         let config = FragmentConfig {
             width,
             height,
-            timescale: 90000,           // Standard video timescale
+            timescale: 90000,           // Standard media timescale
             fragment_duration_ms: 2000, // 2 second fragments
             sps,
             pps,
             vps,
             av1_sequence_header,
             vp9_config,
+            audio_codec,
+            audio_sample_rate,
+            audio_channels,
         };
 
         Ok(FragmentedMuxer::new(config))

@@ -74,8 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let cfg = FragmentConfig {
-        width: 640,
-        height: 480,
+        width: Some(640),
+        height: Some(480),
         timescale: 90_000,
         // Make it very easy to flush a segment with just a few frames.
         fragment_duration_ms: 1,
@@ -84,6 +84,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vps: None,
         av1_sequence_header: None,
         vp9_config: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut fmux = FragmentedMuxer::new(cfg);

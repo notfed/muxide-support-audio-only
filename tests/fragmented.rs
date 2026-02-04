@@ -6,8 +6,8 @@ use muxide::fragmented::{FragmentConfig, FragmentedError, FragmentedMuxer};
 #[test]
 fn test_fragmented_dts_must_be_monotonic() {
     let config = FragmentConfig {
-        width: 1920,
-        height: 1080,
+        width: Some(1920),
+        height: Some(1080),
         timescale: 90000,
         fragment_duration_ms: 2000,
         sps: vec![0x00, 0x00, 0x00, 0x01, 0x67], // Fake SPS
@@ -15,6 +15,9 @@ fn test_fragmented_dts_must_be_monotonic() {
         vps: None,
         av1_sequence_header: None,
         vp9_config: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut muxer = FragmentedMuxer::new(config);
@@ -43,8 +46,8 @@ fn test_fragmented_dts_must_be_monotonic() {
 #[test]
 fn test_fragmented_basic_functionality() {
     let config = FragmentConfig {
-        width: 1920,
-        height: 1080,
+        width: Some(1920),
+        height: Some(1080),
         timescale: 90000,
         fragment_duration_ms: 2000,
         sps: vec![0x00, 0x00, 0x00, 0x01, 0x67], // Fake SPS
@@ -52,6 +55,9 @@ fn test_fragmented_basic_functionality() {
         vps: None,
         av1_sequence_header: None,
         vp9_config: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut muxer = FragmentedMuxer::new(config);
@@ -90,8 +96,8 @@ fn test_fragmented_basic_functionality() {
 #[test]
 fn test_fragmented_h265_basic() {
     let config = FragmentConfig {
-        width: 1920,
-        height: 1080,
+        width: Some(1920),
+        height: Some(1080),
         timescale: 90000,
         fragment_duration_ms: 2000,
         sps: vec![
@@ -101,6 +107,9 @@ fn test_fragmented_h265_basic() {
         vps: Some(vec![0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x60, 0x00]), // Fake H.265 VPS
         av1_sequence_header: None,
         vp9_config: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut muxer = FragmentedMuxer::new(config);
@@ -140,8 +149,8 @@ fn test_fragmented_av1_basic() {
     ];
 
     let config = FragmentConfig {
-        width: 1920,
-        height: 1080,
+        width: Some(1920),
+        height: Some(1080),
         timescale: 90000,
         fragment_duration_ms: 2000,
         sps: vec![], // Not used for AV1
@@ -149,6 +158,9 @@ fn test_fragmented_av1_basic() {
         vps: None,   // Not used for AV1
         av1_sequence_header: Some(seq_header),
         vp9_config: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut muxer = FragmentedMuxer::new(config);
@@ -188,8 +200,8 @@ fn test_fragmented_vp9_basic() {
     };
 
     let config = FragmentConfig {
-        width: 1920,
-        height: 1080,
+        width: Some(1920),
+        height: Some(1080),
         timescale: 90000,
         fragment_duration_ms: 2000,
         sps: vec![], // Not used for VP9
@@ -197,6 +209,9 @@ fn test_fragmented_vp9_basic() {
         vps: None,   // Not used for VP9
         av1_sequence_header: None,
         vp9_config: Some(vp9_config),
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
     };
 
     let mut muxer = FragmentedMuxer::new(config);
