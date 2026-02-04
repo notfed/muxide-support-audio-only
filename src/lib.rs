@@ -12,6 +12,7 @@
 //!
 //! - Accepts encoded H.264/H.265/AV1/VP9 video frames with timestamps
 //! - Accepts encoded AAC/Opus audio frames with timestamps  
+//! - Supports video-only, audio-only, and video+audio muxing
 //! - Outputs MP4 files with fast-start (moov before mdat) for instant web playback
 //! - Supports B-frames via explicit PTS/DTS
 //! - Supports fragmented MP4 (fMP4) for DASH/HLS streaming

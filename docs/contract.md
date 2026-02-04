@@ -44,9 +44,10 @@ Muxide converts incoming timestamps in seconds (`pts: f64`) into a fixed interna
 
 * `audio(self, codec: AudioCodec, sample_rate: u32, channels: u16) -> Self` — Configures an optional audio track.  At most one call to `audio` may be made.  Audio is optional; if omitted, the file will contain only video.  If `codec` is `None`, the sample rate and channels are ignored.
 
-* `build(self) -> Result<Muxer<Writer>, MuxerError>` — Validates the configuration and returns a `Muxer` instance on success.  In v0.1.0 the following validation rules apply:
-  1. A video track must have been configured.  Otherwise a `MuxerError::MissingVideoConfig` is returned.
-  2. If `AudioCodec::None` is selected, the muxer behaves as video-only.
+* `build(self) -> Result<Muxer<Writer>, MuxerError>` — Validates the configuration and returns a `Muxer` instance on success.  The following validation rules apply:
+  1. At least one track (video or audio) must have been configured.  Otherwise a `MuxerError::MissingTrackConfig` is returned.
+  2. Video-only, audio-only, and video+audio configurations are all supported.
+  3. If `AudioCodec::None` is selected, the muxer behaves as video-only.
 
 ### Muxer Methods
 
@@ -94,7 +95,7 @@ Muxide itself is implemented as a single-threaded writer; thread-safety here ref
 
 1. **Monotonic Timestamps:** For each track, presentation timestamps (`pts`) must be non‑negative and strictly increasing (video) or non‑decreasing (audio). If this invariant is violated, the operation must fail.
 2. **Keyframes:** The first video frame must be a keyframe containing SPS and PPS.  Subsequent keyframes must be marked via the `is_keyframe` flag.  Files produced without proper keyframe signalling will not play back correctly and are considered incorrect.
-3. **Single Video Track:** Exactly one video track is supported.  Multiple video tracks or the absence of a video track is an error.
+3. **Track Configuration:** At least one track (video or audio) must be configured. At most one video track and at most one audio track are supported. Audio-only, video-only, and video+audio configurations are all valid.
 4. **Single Audio Track:** At most one audio track is supported.  Adding multiple audio tracks is not allowed.
 5. **B‑frames:** Streams with reordering (B-frames) are supported when callers use `write_video_with_dts()`:
   - Frames must be supplied in **decode order**.

@@ -108,6 +108,9 @@ If input violates the contract, Muxide **fails fast** with explicit errors—no 
 | | VP9 | Frame header parsing, resolution/bit-depth/color config extraction |
 | **Audio** | AAC | All profiles: LC, Main, SSR, LTP, HE, HEv2 |
 | | Opus | Raw packets, 48kHz |
+| **Tracks** | Video-only | Single video track |
+| | Audio-only | Single audio track (AAC or Opus) |
+| | Video+Audio | Combined tracks |
 | **Container** | Fast-start | `moov` before `mdat` for web playback |
 | | B-frames | Explicit PTS/DTS support |
 | | Fragmented MP4 | For DASH/HLS streaming |
@@ -189,6 +192,28 @@ let mut muxer = MuxerBuilder::new(file)
     .audio(AudioCodec::Opus, 48000, 2)
     .build()?;
 muxer.write_audio(0.0, &opus_packet)?;
+```
+
+### Audio-Only (No Video)
+
+```rust
+// Create an audio-only MP4 with AAC
+let mut muxer = MuxerBuilder::new(file)
+    .audio(AudioCodec::Aac(AacProfile::Lc), 48000, 2)
+    .build()?;
+
+// Write audio frames only
+for (i, audio_frame) in audio_frames.iter().enumerate() {
+    let pts = i as f64 * 0.021; // 21ms per frame (1024 samples @ 48kHz)
+    muxer.write_audio(pts, audio_frame)?;
+}
+
+muxer.finish()?;
+
+// Also works with Opus
+let mut opus_muxer = MuxerBuilder::new(file)
+    .audio(AudioCodec::Opus, 48000, 2)
+    .build()?;
 ```
 
 ### Fragmented MP4 (DASH/HLS)
