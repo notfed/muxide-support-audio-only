@@ -1,6 +1,6 @@
 //! Tests for fragmented MP4 muxing
 
-use muxide::api::AudioCodec;
+use muxide::api::{AacProfile, AudioCodec};
 use muxide::codec::vp9::Vp9Config;
 use muxide::fragmented::{FragmentConfig, FragmentedError, FragmentedMuxer};
 
@@ -249,7 +249,7 @@ fn test_fragmented_multitrack_independent_dts() {
         vps: None,
         av1_sequence_header: None,
         vp9_config: None,
-        audio_codec: Some(AudioCodec::AAC),
+        audio_codec: Some(AudioCodec::Aac(AacProfile::Lc)),
         audio_sample_rate: Some(48000),  // Audio timescale
         audio_channels: Some(2),
     };
