@@ -1533,14 +1533,6 @@ fn build_moov_box(
     build_box(b"moov", &payload)
 }
 
-fn build_audio_trak_box(
-    audio: &Mp4AudioTrack,
-    tables: &SampleTables,
-    metadata: Option<&Metadata>,
-) -> Vec<u8> {
-    build_audio_trak_box_with_id(audio, tables, metadata, 2)
-}
-
 fn build_audio_trak_box_with_id(
     audio: &Mp4AudioTrack,
     tables: &SampleTables,
@@ -1554,10 +1546,6 @@ fn build_audio_trak_box_with_id(
     payload.extend_from_slice(&tkhd_box);
     payload.extend_from_slice(&mdia_box);
     build_box(b"trak", &payload)
-}
-
-fn build_audio_tkhd_box() -> Vec<u8> {
-    build_audio_tkhd_box_with_id(2)
 }
 
 fn build_audio_tkhd_box_with_id(track_id: u32) -> Vec<u8> {
