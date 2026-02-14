@@ -241,6 +241,7 @@ impl FragmentedMuxer {
         }
 
         let samples = std::mem::take(&mut self.samples);
+        self.base_media_decode_time = samples[0].dts;
         let segment = build_media_segment(
             &samples,
             self.sequence_number,
@@ -248,18 +249,7 @@ impl FragmentedMuxer {
             self.config.timescale,
         );
 
-        // Update state for next segment
         self.sequence_number += 1;
-        if let Some(last) = samples.last() {
-            // Estimate next base_media_decode_time
-            if samples.len() >= 2 {
-                let duration_total = last.dts.saturating_sub(samples[0].dts);
-                let avg_duration = duration_total / (samples.len() as u64 - 1);
-                self.base_media_decode_time = last.dts + avg_duration;
-            } else {
-                self.base_media_decode_time = last.dts + 3000; // Fallback: 1 frame at 30fps
-            }
-        }
 
         Some(segment)
     }
